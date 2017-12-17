@@ -1,0 +1,3 @@
+[submodule "pydget"]
+	path = pydget
+	url = https://github.com/BalthazarPavot/pydget
