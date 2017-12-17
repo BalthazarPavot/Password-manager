@@ -23,10 +23,19 @@ class PWDFS(object):
   DEFAULT_ALGO = "TWOFISH"
   #DEFAULT_ALGO = "AES256"
 
-  def __init__(self, src=DEFAULT_FILE, algo=DEFAULT_ALGO):
+  DEFAULT_DIGEST = "SHA512"
+
+  DEFAULT_COMPRESS = "ZLIB"
+
+  def __init__(
+      self, src=DEFAULT_FILE, algo=DEFAULT_ALGO,
+      digest=DEFAULT_DIGEST, compress=DEFAULT_COMPRESS
+  ):
     self.gpg = gnupg.GPG()
     self.src = src
     self.algo = algo
+    self.digest = digest
+    self.compress = compress
     self.content = list()
 
   @property
@@ -75,11 +84,194 @@ class PWDFS(object):
         content,
         passphrase=key,
         symmetric=self.algo,
+        digest_algo=self.digest,
+        compress_algo=self.compress,
         encrypt=False
       )))
 
 
-fs = PWDFS()
+class App(pydget.WidgetList):
+
+  def __init__(self, builder, fs):
+    super().__init__()
+    self.builder = builder
+    self.fs = fs
+    self.running = False
+
+  def load_file_dialog(self):
+    name = self.builder.entry_dialog(
+      None, (RESOLUTION[0]-100, 85),
+      title="File path"
+    ).run()
+    name and self.load_file(name)
+
+  def load_default_file(self):
+    self.load_file("passwords")
+
+  def load_file(self, name):
+    if os.path.exists(name):
+      self.fs.src = name
+      self.build_manager()
+
+  def build(self):
+    self.append(
+      self.builder.framed_background(
+        dim=RESOLUTION,
+        frame_corner_smooth=False
+      )
+    )
+    self.build_welcome()
+
+  def build_welcome(self):
+    self.build_menus()
+    self.extend((
+      self.builder.button(
+        None, (200, 50), 
+        label_text="load pass file", button_action=self.load_file_dialog
+      ).move(y=-60), self.builder.button(
+        None, (200, 50), 
+        label_text="load default pass file", button_action=self.load_default_file
+      ),
+    ))
+
+  def build_manager(self):
+    self.build_menus()
+    y = 10
+    self.password_entry = self.builder.entry((200, y+24), (300, 24))
+    self.password_panel = self.builder.panel(
+      (10, y+80), (RESOLUTION[0] - 20, RESOLUTION[1] - y - 114),
+      columns=3, lines=-1, no_scroll=(True, False), force_fit=False
+    )
+    self.extend((
+      self.builder.label((200, y), (0, 24),
+      label_text="Password for '%s' file" % self.fs.src),
+      self.password_entry,
+      self.builder.button(
+        (200, y+50), (98, 24), label_text="load",
+        button_action=self.load
+      ),
+      self.builder.button(
+        (301, y+50), (98, 24), label_text="save",
+        button_action=self.save
+      ),
+      self.builder.button(
+        (402, y+50), (98, 24), label_text="close",
+        button_action=self.build_welcome
+      ), self.password_panel
+    ))
+
+  def build_menus(self):
+    self[1:] = (
+      self.builder.drop_down(
+        (-2, 10), (175, 24), menu_content=tuple(
+          (name, lambda algo=name:self.set_algo(algo))
+          for name in os.popen(
+            "gpg --with-colons --list-config ciphername"
+          ).read()[:-1].strip("cfg:ciphername:").split(";")
+        )
+      ), self.builder.drop_down(
+        (-2, 35), (175, 24), menu_content=tuple(
+          (name, lambda algo=name:self.set_digest(algo))
+          for name in os.popen(
+            "gpg --with-colons --list-config digestname"
+          ).read()[:-1].strip("cfg:digestname:").split(";")
+        )
+      ), self.builder.drop_down(
+        (-2, 60), (175, 24), menu_content=tuple(
+          (name, lambda algo=name:self.set_compress(algo))
+          for name in ("ZLIB", "BZIP2", "ZIP", "Uncompressed")
+        )
+      ), self.builder.button(
+        (-2, RESOLUTION[1]-30), (175, 24), label_text="quit",
+        button_action=self.stop
+      ), 
+    )
+    self.set_algo()
+    self.set_digest()
+    self.set_compress()
+
+  def set_algo(self, name=None):
+    if name is not None:
+      self.fs.algo = name
+    self[1].label_text = "Algo: %s" % self.fs.algo
+
+  def set_digest(self, name=None):
+    if name is not None:
+      self.fs.digest = name
+    self[2].label_text = "Digest: %s" % self.fs.digest
+
+  def set_compress(self, name=None):
+    if name is not None:
+      self.fs.compress = name
+    self[3].label_text = "Compression: %s" % self.fs.compress
+
+  def get_pass(self):
+    self.password_entry.entry_selected_text = self.password_entry.empty_selection
+    if self.password_entry.label_text:
+      return str(self.password_entry)
+    return None
+
+  def load(self):
+    password = self.get_pass()
+    print(password)
+    if password is not None:
+      self.fs.read(password)
+      print(self.fs.content)
+      for user, password, info in self.fs.content:
+        if len(user) > 16:
+          compact_user = user[:13] + "..."
+        else:
+          compact_user = user
+        children = (
+          self.builder.label(label_text=compact_user), 
+          self.builder.label(label_text="*"*16), 
+          self.builder.label(label_text=info), 
+        )
+        children[0].original_user = user
+        children[1].original_pass = password
+        self.password_panel.add_children(children)
+
+  def save(self):
+    password = self.get_pass()
+    if password is not None:
+      self.fs.save(password)
+
+  def run(self):
+    self.running = True
+    self.regulator = pydget.Timer(fps=30)
+    while self.running:
+      self.regulator.regulate()
+      self.display()
+      pygame.display.flip()
+      self.manage_events()
+
+  def manage_events(self):
+    for event in pygame.event.get():
+      if event.type == pygame.QUIT:
+        self.stop()
+      else:
+        self.capture_event(event)
+
+  def stop(self):
+    self.running = False
+
+if __name__ == "__main__":
+
+  pygame.init()
+  pygame.mixer.quit()
+  pygame.key.set_repeat(150, 40)
+  RESOLUTION = 640, 480
+
+  fs = PWDFS()
+  builder = pydget.WidgetBuilder(
+    pydget.WidgetContext(
+      pygame.display.set_mode(RESOLUTION)
+    )
+  )
+  app = App(builder, fs)
+  app.build()
+  app.run()
+  exit()
 
 password = input("Password:\n>>> ")
 fs.read(password)
