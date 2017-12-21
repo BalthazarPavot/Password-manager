@@ -9,6 +9,26 @@ import gnupg
 from pydget import pydget
 import pygame
 
+
+def bounded_function(function):
+  def bind_to(self):
+    def bound(*args, **kwargs):
+      return function(self, *args, **kwargs)
+    return bound
+  return bind_to
+
+@bounded_function
+def show_text(self, event):
+  if self.label_text != self.original_text:
+    self._old_original_text = self.label_text
+    self.label_text = self.original_text
+
+@bounded_function
+def hide_text(self, event):
+  if self.label_text == self.original_text:
+    self.label_text = self._old_original_text
+
+
 class PWDFS(object):
 
   DEFAULT_FILE = "passwords"
@@ -78,7 +98,8 @@ class PWDFS(object):
     content = self.raw_content
     if not content:
       return self.open("w").close()
-    shutil.copy(self.src, self.src+".bak")
+    if os.path.exists(self.src):
+      shutil.copy(self.src, self.src+".bak")
     with self.open("w") as key_file:
       key_file.write(str(self.gpg.encrypt(
         content,
@@ -137,7 +158,10 @@ class App(pydget.WidgetList):
   def build_manager(self):
     self.build_menus()
     y = 10
-    self.password_entry = self.builder.entry((200, y+24), (300, 24))
+    self.password_entry = self.builder.entry(
+      (200, y+24), (300, 24),
+      hidden=True
+    )
     self.password_panel = self.builder.panel(
       (10, y+80), (RESOLUTION[0] - 20, RESOLUTION[1] - y - 114),
       columns=3, lines=-1, no_scroll=(True, False), force_fit=False
@@ -147,21 +171,25 @@ class App(pydget.WidgetList):
       label_text="Password for '%s' file" % self.fs.src),
       self.password_entry,
       self.builder.button(
-        (200, y+50), (98, 24), label_text="load",
+        (200, y+50), (73, 24), label_text="load",
         button_action=self.load
       ),
       self.builder.button(
-        (301, y+50), (98, 24), label_text="save",
+        (275, y+50), (73, 24), label_text="save",
         button_action=self.save
       ),
       self.builder.button(
-        (402, y+50), (98, 24), label_text="close",
+        (350, y+50), (73, 24), label_text="save as",
+        button_action=self.save_as
+      ),
+      self.builder.button(
+        (425, y+50), (75, 24), label_text="close",
         button_action=self.build_welcome
       ), self.password_panel
     ))
 
   def build_menus(self):
-    self[1:] = (
+    self.algo_dd, self.digest_dd, self.compress_dd, *_ = self[1:] = (
       self.builder.drop_down(
         (-2, 10), (175, 24), menu_content=tuple(
           (name, lambda algo=name:self.set_algo(algo))
@@ -193,52 +221,82 @@ class App(pydget.WidgetList):
   def set_algo(self, name=None):
     if name is not None:
       self.fs.algo = name
-    self[1].label_text = "Algo: %s" % self.fs.algo
+    self.algo_dd.label_text = "Algo: %s" % self.fs.algo
 
   def set_digest(self, name=None):
     if name is not None:
       self.fs.digest = name
-    self[2].label_text = "Digest: %s" % self.fs.digest
+    self.digest_dd.label_text = "Digest: %s" % self.fs.digest
 
   def set_compress(self, name=None):
     if name is not None:
       self.fs.compress = name
-    self[3].label_text = "Compression: %s" % self.fs.compress
+    self.compress_dd.label_text = "Compression: %s" % self.fs.compress
 
   def get_pass(self):
-    self.password_entry.entry_selected_text = self.password_entry.empty_selection
+    self.password_entry.entry_selected_text = \
+      self.password_entry.empty_selection
     if self.password_entry.label_text:
       return str(self.password_entry)
     return None
 
   def load(self):
     password = self.get_pass()
-    print(password)
     if password is not None:
       self.fs.read(password)
-      print(self.fs.content)
+      self.password_panel.children = None
       for user, password, info in self.fs.content:
-        if len(user) > 16:
-          compact_user = user[:13] + "..."
-        else:
-          compact_user = user
-        children = (
-          self.builder.label(label_text=compact_user), 
-          self.builder.label(label_text="*"*16), 
-          self.builder.label(label_text=info), 
+        self.password_panel.add_children(
+          self.build_password_content(
+            user, password, info
+          )
         )
-        children[0].original_user = user
-        children[1].original_pass = password
-        self.password_panel.add_children(children)
+
+  def build_password_content(self, user, password, info):
+    if len(user) > 16:
+      compact_user = user[:13] + "..."
+    else:
+      compact_user = user
+    children = (
+      self.builder.label(label_text=compact_user), 
+      self.builder.label(label_text="*"*16), 
+      #self.builder.label(label_text=info), 
+      self.builder.label(label_text="*"*16), 
+    )
+    children[0].original_text = user
+    if compact_user != user:
+      children[0].action_on_hovered = show_text(children[0])
+      children[0].action_on_not_hovered = hide_text(children[0])
+    children[1].original_text = password
+    children[1].action_on_hovered = show_text(children[1])
+    children[1].action_on_not_hovered = hide_text(children[1])
+    children[2].original_text = info
+    children[2].action_on_hovered = show_text(children[2])
+    children[2].action_on_not_hovered = hide_text(children[2])
+    return children
 
   def save(self):
     password = self.get_pass()
     if password is not None:
       self.fs.save(password)
 
+  def save_as(self):
+    file_name = self.builder.entry_dialog(
+      None, (RESOLUTION[0]-100, 85),
+      title="New File path"
+    ).run()
+    if file_name:
+      password = self.get_pass()
+      if password is not None:
+        self.fs.src = file_name
+        self.fs.save(password)
+
   def run(self):
     self.running = True
     self.regulator = pydget.Timer(fps=30)
+    self.load_default_file()
+    self.password_entry.label_text =                                                                                                            ["madoromi-chan has got thick horns"]
+    self.load()
     while self.running:
       self.regulator.regulate()
       self.display()
