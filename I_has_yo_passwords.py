@@ -295,7 +295,6 @@ class App(pydget.WidgetList):
     self.running = True
     self.regulator = pydget.Timer(fps=30)
     self.load_default_file()
-    self.password_entry.label_text =                                                                                                            ["madoromi-chan has got thick horns"]
     self.load()
     while self.running:
       self.regulator.regulate()
